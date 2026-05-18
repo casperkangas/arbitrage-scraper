@@ -1,4 +1,5 @@
 import asyncio
+import pandas as pd
 from playwright.async_api import async_playwright
 
 async def extract_match_data(url: str):
@@ -11,45 +12,54 @@ async def extract_match_data(url: str):
         
         print("Loading Veikkaus Pitkäveto...")
         await page.goto(url, wait_until="networkidle")
-        
-        # Wait specifically for the game rows to appear in the DOM
         await page.wait_for_selector('[data-testid="subpage-game-row"]', timeout=15000)
         
-        # Locate all match containers on the page
         match_rows = page.locator('[data-testid="subpage-game-row"]')
         count = await match_rows.count()
-        print(f"Found {count} matches on the page.\n")
+        print(f"Found {count} total matches. Filtering for active 2-way Match Winner markets...\n")
         
-        # Loop through the first 5 matches for testing
-        for i in range(min(5, count)):
+        scraped_data = []
+        
+        for i in range(count):
             row = match_rows.nth(i)
             
-            # Extract Team Names using the specific classes
             home_team = await row.locator('.gameinfo-teams-team--home').inner_text()
             away_team = await row.locator('.gameinfo-teams-team--away').inner_text()
             
-            # Extract Odds. We target the generic 'bet-selection-button' and grab all of them in the row
-            buttons = row.locator('.bet-selection-button')
+            # Target buttons specifically by their testing IDs, bypassing all containers
+            buttons = row.locator('button[data-testid$="-MONEY_LINE"], button[data-testid$="-MATCH_WINNER"]')
             button_count = await buttons.count()
             
+            # Strict filter: Exactly 2 buttons guarantees a 2-way, non-suspended Lopputulos market
+            if button_count != 2:
+                continue
+                
             odds = []
             for b in range(button_count):
                 button = buttons.nth(b)
-                # Check if the class list contains the placeholder class (meaning the odd is suspended)
-                class_attribute = await button.get_attribute('class')
-                
-                if 'bet-selection-button-placeholder' in class_attribute:
-                    odds.append("Suspended/Closed")
-                else:
-                    # Extract the text inside the span (e.g., "25,50") and clean it
-                    odd_text = await button.inner_text()
-                    odds.append(odd_text.strip())
+                odd_text = await button.inner_text()
+                # Clean the string and convert to float
+                clean_odd = float(odd_text.strip().replace(',', '.'))
+                odds.append(clean_odd)
             
-            print(f"Match: {home_team} vs {away_team}")
-            print(f"Odds Extracted: {odds}")
-            print("-" * 40)
+            scraped_data.append({
+                "Home Team": home_team,
+                "Away Team": away_team,
+                "Veikkaus Odd 1": odds[0],
+                "Veikkaus Odd 2": odds[1]
+            })
             
         await browser.close()
+        
+        df = pd.DataFrame(scraped_data)
+        
+        if not df.empty:
+            print(df.head(10))
+            output_file = "veikkaus_odds.xlsx"
+            df.to_excel(output_file, index=False)
+            print(f"\nData successfully exported to {output_file}")
+        else:
+            print("No active 2-way Match Winner markets found.")
 
 if __name__ == "__main__":
     target_url = "https://www.veikkaus.fi/fi/vedonlyonti/pitkaveto"
